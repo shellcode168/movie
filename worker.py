@@ -1,6 +1,6 @@
 # ==============================================================================
 # 🚀 Infinity Swarm Studio: GitHub Actions 无头无弹窗版 worker.py
-# 核心: Rclone挂载5TB云盘 + 12线程并发音画素材 + 自动抢单分布式渲染
+# 核心: Rclone挂载5TB云盘 + 12线程并发音画素材 + 自动抢单分布式渲染 + 自动换新片防重
 # ==============================================================================
 import os, sys, json, time, random, subprocess, shutil, textwrap, re, warnings, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -85,21 +85,40 @@ def save_bible(bible):
     except: pass
 
 # ==============================================================================
-# 3. 业务逻辑核心
+# 3. 业务逻辑核心 (已集成防重与自动换新片机制)
 # ==============================================================================
 def load_or_create_film_bible():
     if os.path.exists(BIBLE_FILE):
         try:
-            with open(BIBLE_FILE, "r", encoding="utf-8") as f: return json.load(f)
+            with open(BIBLE_FILE, "r", encoding="utf-8") as f: 
+                bible = json.load(f)
+            
+            # 检查当前电影是否 24 章全部渲染完毕
+            chapters = bible.get("chapters", [])
+            all_done = len(chapters) == TOTAL_CHAPTERS and all(ch.get("status") == "rendered" for ch in chapters)
+            
+            # 检查最终 120 分钟母带是否已经在云盘生成
+            film_id = bible.get("film_id", "")
+            master_movie = f"{DRIVE_ROOT}/05_2Hour_Master_Movies/{film_id}_{bible.get('title','电影')}_120分钟完整版.mp4"
+            
+            if all_done or os.path.exists(master_movie):
+                print(f"🎬 检测到上一部电影《{bible.get('title')}》已全部完工，正在归档并自动策划下一部新巨作...")
+                archive_path = f"{DRIVE_ROOT}/00_bible_and_ledger/archived_bible_{film_id}.json"
+                try: shutil.copy2(BIBLE_FILE, archive_path)
+                except: pass
+                os.remove(BIBLE_FILE)
+            else:
+                return bible
         except: pass
 
-    raw = quota_safe_call("策划一部120分钟(24章)电影总纲，输出纯JSON：{\"title\":\"四字片名\",\"character_anchor_M\":\"man\",\"character_anchor_F\":\"woman\",\"chapters\":[{\"chapter_num\":1,\"chapter_title\":\"四字标题\",\"summary\":\"核心剧情\",\"mood\":\"comedy\"}]}", use_search=True)
+    # 自动策划全新不同片名的电影
+    raw = quota_safe_call("策划一部全新的、具有完全不同题材和四字片名的120分钟(24章)电影总纲，输出纯JSON：{\"title\":\"全新四字片名\",\"character_anchor_M\":\"man\",\"character_anchor_F\":\"woman\",\"chapters\":[{\"chapter_num\":1,\"chapter_title\":\"四字标题\",\"summary\":\"核心剧情\",\"mood\":\"comedy\"}]}", use_search=True)
     try: bible = json.loads(raw[raw.find('{'):raw.rfind('}')+1])
-    except: bible = {"title": "草台英雄", "character_anchor_M": "man", "character_anchor_F": "woman", "chapters": []}
+    except: bible = {"title": f"光影传奇_{random.randint(10,99)}", "character_anchor_M": "man", "character_anchor_F": "woman", "chapters": []}
 
     while len(bible.get("chapters", [])) < TOTAL_CHAPTERS:
         idx = len(bible["chapters"]) + 1
-        bible["chapters"].append({"chapter_num": idx, "chapter_title": f"命运·第{idx}幕", "summary": "荒诞误会中见真情。", "mood": "comedy" if idx <= 8 else "emotional"})
+        bible["chapters"].append({"chapter_num": idx, "chapter_title": f"新篇·第{idx}幕", "summary": "扣人心弦的全新冒险与转折。", "mood": "comedy" if idx <= 12 else "suspense"})
     bible["chapters"] = bible["chapters"][:TOTAL_CHAPTERS]
     bible["film_id"] = str(int(time.time()))
     bible["master_seed"] = random.randint(100000, 999999)
@@ -196,6 +215,12 @@ def run_worker():
     bible = load_or_create_film_bible()
     film_id, title = bible["film_id"], bible["title"]
 
+    # 检查整部电影最终母带是否已生成，如果已生成直接触发合成或提示
+    final_master = f"{DRIVE_ROOT}/05_2Hour_Master_Movies/{film_id}_{title}_120分钟完整版.mp4"
+    if os.path.exists(final_master) and os.path.getsize(final_master) > 1000000:
+        print(f"🎉 电影《{title}》120分钟母带已存在，跳过重复渲染。")
+        return
+
     for ch_idx, ch in enumerate(bible["chapters"]):
         ch_num = ch["chapter_num"]
         ch_reel = f"{DRIVE_ROOT}/04_chapter_reels/{film_id}_Chapter_{ch_num:02d}_{ch['chapter_title']}.mp4"
@@ -227,6 +252,26 @@ def run_worker():
             try: os.remove(lock)
             except: pass
             print(f"✅ [{WORKER_ID}] 成功抢单并拍完第 {ch_num:02d} 章！")
+
+    # 检查是否所有章节都刚拍完，如果是，则自动触发 120 分钟母带无损合成
+    updated_bible = load_or_create_film_bible()
+    if all(c.get("status") == "rendered" for c in updated_bible.get("chapters", [])):
+        print(f"🔥 24章全部集齐！正在秒级无损合成 120 分钟院线母带：《{title}》...")
+        reel_files = []
+        for ch in updated_bible["chapters"]:
+            r_path = f"{DRIVE_ROOT}/04_chapter_reels/{film_id}_Chapter_{ch['chapter_num']:02d}_{ch['chapter_title']}.mp4"
+            if is_valid_media(r_path): reel_files.append(r_path)
+        
+        if len(reel_files) == TOTAL_CHAPTERS:
+            master_concat = f"{LOCAL_RAM_DISK}/tmp/master_concat.txt"
+            with open(master_concat, "w") as f:
+                for rf in reel_files: f.write(f"file '{os.path.abspath(rf)}'\n")
+            
+            local_master = f"{LOCAL_RAM_DISK}/tmp/{film_id}_{title}_120分钟完整版.mp4"
+            subprocess.run(f'ffmpeg -y -f concat -safe 0 -i "{master_concat}" -c copy "{local_master}"', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if is_valid_media(local_master):
+                shutil.copy2(local_master, final_master)
+                print(f"🎉 120分钟巨制《{title}》极速大功告成！永久保存在 5TB 云盘: {final_master}")
 
 if __name__ == "__main__":
     run_worker()

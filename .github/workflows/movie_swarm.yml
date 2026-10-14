@@ -20,7 +20,6 @@ jobs:
       - name: ⚙️ 2. 环境准备 (已包含 rclone 自动安装)
         run: |
           sudo apt-get update -qq
-          # 🔥 核心修正：在此处加入了 rclone 和 fuse3 的系统安装，彻底解决 command not found 报错
           sudo apt-get install -y -qq fonts-noto-cjk ffmpeg rclone fuse3
           pip install -q pillow edge-tts google-genai torch diffusers transformers accelerate
 
@@ -29,7 +28,8 @@ jobs:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+          # 🔥 核心修正：使用 printf 安全写入多行配置，彻底解决文件名超长报错
+          printf '%s\n' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
           sudo mkdir -p /content/drive/MyDrive
           sudo chmod 777 /content/drive/MyDrive
           # 启动后台静默挂载

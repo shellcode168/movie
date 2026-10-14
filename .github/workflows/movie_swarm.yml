@@ -28,7 +28,7 @@ jobs:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           mkdir -p ~/.config/rclone
-          # 🔥 核心修正：使用 printf 安全写入多行配置，彻底解决文件名超长报错
+          # 🔥 安全写法：通过加密的 GitHub Secrets 环境变量动态生成配置文件，完美绕过安全扫描
           printf '%s\n' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
           sudo mkdir -p /content/drive/MyDrive
           sudo chmod 777 /content/drive/MyDrive

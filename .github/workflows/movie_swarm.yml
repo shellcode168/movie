@@ -25,11 +25,12 @@ jobs:
 
       - name: 📂 3. 挂载 5TB Google Drive 云盘
         env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
+          RCLONE_ENCODED_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           mkdir -p ~/.config/rclone
-          # 🔥 安全写法：通过加密的 GitHub Secrets 环境变量动态生成配置文件，完美绕过安全扫描
-          printf '%s\n' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+          # 🔥 终极安全解法：通过 Base64 解码还原 rclone.conf，彻底根治路径与换行符报错
+          echo "$RCLONE_ENCODED_CONFIG" | base64 --decode > ~/.config/rclone/rclone.conf
+          
           sudo mkdir -p /content/drive/MyDrive
           sudo chmod 777 /content/drive/MyDrive
           # 启动后台静默挂载

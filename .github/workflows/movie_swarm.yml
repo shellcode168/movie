@@ -1,7 +1,9 @@
 name: 🎬 Infinity Movie Swarm (Parallel Nodes)
 
 on:
-  workflow_dispatch: # 支持你在手机或网页随时一键点击手动启动！
+  workflow_dispatch: # 依然保留：随时支持你在手机或网页手动一键点火
+  schedule:
+    - cron: '*/30 * * * *' # 🔥 核心新增：每隔 30 分钟自动在后台触发一次集群接单巡逻！
 
 jobs:
   run_nodes:
@@ -28,7 +30,7 @@ jobs:
           RCLONE_ENCODED_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           mkdir -p ~/.config/rclone
-          # 🔥 终极安全解法：通过 Base64 解码还原 rclone.conf，彻底根治路径与换行符报错
+          # Base64 安全解码还原 rclone.conf
           echo "$RCLONE_ENCODED_CONFIG" | base64 --decode > ~/.config/rclone/rclone.conf
           
           sudo mkdir -p /content/drive/MyDrive

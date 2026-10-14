@@ -1,7 +1,7 @@
 name: 🎬 Infinity Movie Swarm (Parallel Nodes)
 
 on:
-  workflow_dispatch: # 支持你在手机或网页随时一键点击启动！
+  workflow_dispatch: # 支持你在手机或网页随时一键点击手动启动！
 
 jobs:
   run_nodes:
@@ -10,28 +10,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 🔥 核心：这里写 8，GitHub 就会同时拉起 8 台服务器分身为你抢单拍片！
+        # 19 个节点矩阵并发集群
         node_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
     steps:
       - name: 📥 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: ⚙️ 2. 环境准备
+      - name: ⚙️ 2. 环境准备 (已包含 rclone 自动安装)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-noto-cjk ffmpeg fuse3
+          # 🔥 核心修正：在此处加入了 rclone 和 fuse3 的系统安装，彻底解决 command not found 报错
+          sudo apt-get install -y -qq fonts-noto-cjk ffmpeg rclone fuse3
           pip install -q pillow edge-tts google-genai torch diffusers transformers accelerate
 
       - name: 📂 3. 挂载 5TB Google Drive 云盘
         env:
-          # 你可以在 GitHub Secrets 里存入 rclone 的配置内容
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
         run: |
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
           sudo mkdir -p /content/drive/MyDrive
           sudo chmod 777 /content/drive/MyDrive
+          # 启动后台静默挂载
           rclone mount gdrive: /content/drive/MyDrive --daemon --vfs-cache-mode writes --allow-non-empty
           sleep 5
 
@@ -40,6 +41,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           WORKER_NODE_ID: "Node_${{ matrix.node_id }}"
         run: |
-          # 错峰防冲突启动
-          sleep $(( ${{ matrix.node_id }} * 4 ))
+          # 错峰防冲突启动，避免所有节点同时去抢第1章的锁
+          sleep $(( ${{ matrix.node_id }} * 3 ))
           python3 worker.py

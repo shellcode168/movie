@@ -1,17 +1,16 @@
 name: Distributed Dynamic Movie Swarm (Multi-Node)
 
 on:
-  workflow_dispatch: # 支持手动点击一键触发
+  workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *' # 每 30 分钟轮巡检查并唤醒渲染集群
+    - cron: '*/30 * * * *'
 
 jobs:
   swarm_workers:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # 某台机器出错不影响其他机器运行
+      fail-fast: false
       matrix:
-        # 建议开启 4 台并发机器（若后续提升了 API 等级，可改为 [1, 2, 3, 4, 5]）
         node_id: [1, 2, 3, 4]
 
     steps:
@@ -24,14 +23,14 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install --upgrade google-genai pillow requests
 
-      - name: 启动多节点抢单渲染
+      - name: 启动多节点透视抢单渲染
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DIRECTOR_API_URL: ${{ secrets.DIRECTOR_API_URL }}
           NODE_ID: ${{ matrix.node_id }}
         run: |
           python3 - << 'RUNNER'
-          import os, sys, json, time, random, subprocess, requests
+          import os, sys, json, time, random, requests
           from google import genai
           from google.genai import types
 
@@ -40,20 +39,25 @@ jobs:
           NODE_ID = os.environ.get("NODE_ID", "1")
 
           if not API_URL or not KEY:
-              print(f"[Node {NODE_ID}] 缺少必要环境变量，退出。")
+              print(f"❌ [节点 #{NODE_ID}] 缺少必要环境变量 DIRECTOR_API_URL 或 GEMINI_API_KEY，退出。")
               sys.exit(0)
 
           client = genai.Client(api_key=KEY)
+          print(f"================================================================")
+          print(f"🛰️ [集群节点 #{NODE_ID}] 算力机上线，连接总导演: {API_URL}")
+          print(f"================================================================")
 
-          print(f"🚀 [Node {NODE_ID}] 算力节点已连线，准备参与任务分配...")
-
-          # 错开启动时间，避免多台机器在同一微秒向总导演抢同一个单
-          time.sleep(random.randint(2, 10))
+          # 错开启动时间，避免瞬时竞争
+          delay = random.randint(2, 8)
+          print(f"⏱️ [节点 #{NODE_ID}] 为防撞车，错峰缓冲 {delay} 秒后发起任务抢夺...")
+          time.sleep(delay)
 
           while True:
               try:
+                  print(f"🔍 [节点 #{NODE_ID}] 正在向中枢请求空闲镜头任务...")
                   res = requests.get(f"{API_URL}/api/get_task", timeout=15)
                   if res.status_code != 200:
+                      print(f"⚠️ [节点 #{NODE_ID}] 中枢通信状态码 {res.status_code}，休眠 15 秒...")
                       time.sleep(15)
                       continue
 
@@ -61,49 +65,67 @@ jobs:
                   status = task.get("status")
 
                   if status == "empty":
-                      print(f"[Node {NODE_ID}] 剧本策划中，休眠 20 秒...")
+                      print(f"⏳ [节点 #{NODE_ID}] 总导演正在撰写新电影剧本，休眠 20 秒...")
                       time.sleep(20)
                       continue
                   elif status == "completed":
-                      print(f"[Node {NODE_ID}] 当前电影所有镜头已渲染完毕！")
+                      film_title = task.get("film_title", "本片")
+                      print(f"🎉 [节点 #{NODE_ID}] 电影《{film_title}》所有镜头已完结，无待渲染任务，安全休眠。")
                       break
                   elif status != "assigned":
+                      print(f"ℹ️ [节点 #{NODE_ID}] 当前无任务分配，状态: {status}，等待 10 秒...")
                       time.sleep(10)
                       continue
 
+                  film_title = task.get("film_title", "未命名大片")
+                  chapter_id = task.get("chapter_id", 1)
                   shot = task["shot"]
-                  sid = shot["shot_id"]
-                  print(f"🎬 [Node {NODE_ID}] 成功接单: 镜头 {sid} | 描述: {shot.get('prompt')}")
+                  sid = shot.get("shot_id", "未知镜")
+                  prompt = shot.get("prompt", "")
+                  dur = shot.get("duration", 8)
+                  is_climax = "💥[高潮重头戏]" if shot.get("is_climax") else "🎬[常规过渡镜]"
 
+                  tag = f"节点#{NODE_ID} | 《{film_title}》第 {chapter_id} 章 | 镜头 {sid}"
+
+                  print(f"\n🎬 ============================================================")
+                  print(f"🎬 成功抢单: {tag} {is_climax}")
+                  print(f"   动作描述: {prompt}")
+                  print(f"   镜头时长: {dur} 秒")
+                  print(f"================================================================")
+
+                  # 提交 Veo 2.0 任务
+                  print(f"   📡 [{tag}] 正在向 Veo 2.0 提交渲染请求...")
                   full_prompt = (
-                      f"{task.get('art_style_anchor')}. {shot.get('prompt')}. "
+                      f"{task.get('art_style_anchor')}. {prompt}. "
                       "Fluid physical movement, cinematic lighting, realistic camera motion, 4k resolution, zero static frames."
                   )
 
-                  # 提交 Veo 2.0 物理动态渲染任务
                   operation = client.models.generate_videos(
                       model='veo-2.0-generate-001',
                       prompt=full_prompt,
                       config=types.GenerateVideosConfig(aspect_ratio="16:9", person_generation="allow_adult")
                   )
 
+                  print(f"   ⏳ [{tag}] Veo 视频生成中，进入轮询等待...")
+                  elapsed = 0
                   while not operation.done:
                       time.sleep(12)
+                      elapsed += 12
+                      print(f"      -> [{tag}] 动态物理轨迹计算中... (已耗时 {elapsed}s)")
                       operation = client.operations.get(operation)
 
                   if operation.result and operation.result.generated_videos:
-                      # 渲染成功，回传状态给总导演
+                      print(f"   ✅ [{tag}] 视频生成完毕，正在向总导演上报归档...")
                       report_res = requests.post(
                           f"{API_URL}/api/report_shot",
                           json={"shot_id": sid},
                           timeout=15
                       )
-                      print(f"🎉 [Node {NODE_ID}] 镜头 {sid} 渲染上报成功！")
+                      print(f"   🎉 [{tag}] 镜头上报成功，已标记为 rendered！\n")
 
-                  # 单个任务完成后稍微缓冲，避免触发瞬时 QPS 上限
                   time.sleep(5)
 
               except Exception as e:
-                  print(f"[Node {NODE_ID} Error] {repr(e)}")
+                  print(f"❌ [节点 #{NODE_ID} 异常] {repr(e)}")
                   time.sleep(15)
           RUNNER

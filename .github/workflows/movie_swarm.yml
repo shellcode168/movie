@@ -1,61 +1,109 @@
-name: Distributed Dynamic Movie Swarm
+name: Distributed Dynamic Movie Swarm (Multi-Node)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 支持手动点击一键触发
   schedule:
-    - cron: '*/20 * * * *'
+    - cron: '*/30 * * * *' # 每 30 分钟轮巡检查并唤醒渲染集群
 
 jobs:
-  render_dynamic_reels:
+  swarm_workers:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false # 某台机器出错不影响其他机器运行
       matrix:
-        node_id: [1, 2]
+        # 建议开启 4 台并发机器（若后续提升了 API 等级，可改为 [1, 2, 3, 4, 5]）
+        node_id: [1, 2, 3, 4]
+
     steps:
-      - name: 检出代码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置 Python 与 FFmpeg 环境
+      - name: 配置 Python 与 FFmpeg 渲染环境
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           pip install --upgrade google-genai pillow requests
 
-      - name: 启动抢单渲染进程
+      - name: 启动多节点抢单渲染
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DIRECTOR_API_URL: ${{ secrets.DIRECTOR_API_URL }}
+          NODE_ID: ${{ matrix.node_id }}
         run: |
           python3 - << 'RUNNER'
-          import os, sys, json, time, requests
+          import os, sys, json, time, random, subprocess, requests
           from google import genai
           from google.genai import types
 
           API_URL = os.environ.get("DIRECTOR_API_URL", "").rstrip("/")
           KEY = os.environ.get("GEMINI_API_KEY", "")
+          NODE_ID = os.environ.get("NODE_ID", "1")
+
           if not API_URL or not KEY:
+              print(f"[Node {NODE_ID}] 缺少必要环境变量，退出。")
               sys.exit(0)
 
           client = genai.Client(api_key=KEY)
-          try:
-              res = requests.get(f"{API_URL}/api/get_task", timeout=15)
-              task = res.json()
-              if task.get("status") == "assigned":
+
+          print(f"🚀 [Node {NODE_ID}] 算力节点已连线，准备参与任务分配...")
+
+          # 错开启动时间，避免多台机器在同一微秒向总导演抢同一个单
+          time.sleep(random.randint(2, 10))
+
+          while True:
+              try:
+                  res = requests.get(f"{API_URL}/api/get_task", timeout=15)
+                  if res.status_code != 200:
+                      time.sleep(15)
+                      continue
+
+                  task = res.json()
+                  status = task.get("status")
+
+                  if status == "empty":
+                      print(f"[Node {NODE_ID}] 剧本策划中，休眠 20 秒...")
+                      time.sleep(20)
+                      continue
+                  elif status == "completed":
+                      print(f"[Node {NODE_ID}] 当前电影所有镜头已渲染完毕！")
+                      break
+                  elif status != "assigned":
+                      time.sleep(10)
+                      continue
+
                   shot = task["shot"]
                   sid = shot["shot_id"]
-                  print(f"🎬 GitHub 节点接单: {sid}")
-                  prompt = f"{task.get('art_style_anchor')}. {shot.get('prompt')}. Fluid physical motion, 4k cinematic."
-                  op = client.models.generate_videos(
+                  print(f"🎬 [Node {NODE_ID}] 成功接单: 镜头 {sid} | 描述: {shot.get('prompt')}")
+
+                  full_prompt = (
+                      f"{task.get('art_style_anchor')}. {shot.get('prompt')}. "
+                      "Fluid physical movement, cinematic lighting, realistic camera motion, 4k resolution, zero static frames."
+                  )
+
+                  # 提交 Veo 2.0 物理动态渲染任务
+                  operation = client.models.generate_videos(
                       model='veo-2.0-generate-001',
-                      prompt=prompt,
+                      prompt=full_prompt,
                       config=types.GenerateVideosConfig(aspect_ratio="16:9", person_generation="allow_adult")
                   )
-                  while not op.done:
+
+                  while not operation.done:
                       time.sleep(12)
-                      op = client.operations.get(op)
-                  if op.result and op.result.generated_videos:
-                      requests.post(f"{API_URL}/api/report_shot", json={"shot_id": sid}, timeout=10)
-                      print(f"🎉 镜头 {sid} 生成并上报完毕！")
-          except Exception as e:
-              print(f"Swarm Error: {e}")
+                      operation = client.operations.get(operation)
+
+                  if operation.result and operation.result.generated_videos:
+                      # 渲染成功，回传状态给总导演
+                      report_res = requests.post(
+                          f"{API_URL}/api/report_shot",
+                          json={"shot_id": sid},
+                          timeout=15
+                      )
+                      print(f"🎉 [Node {NODE_ID}] 镜头 {sid} 渲染上报成功！")
+
+                  # 单个任务完成后稍微缓冲，避免触发瞬时 QPS 上限
+                  time.sleep(5)
+
+              except Exception as e:
+                  print(f"[Node {NODE_ID} Error] {repr(e)}")
+                  time.sleep(15)
           RUNNER

@@ -1,49 +1,61 @@
-name: 🎬 Infinity Movie Swarm (Parallel Nodes)
+name: Distributed Dynamic Movie Swarm
 
 on:
-  workflow_dispatch: # 依然保留：随时支持你在手机或网页手动一键点火
+  workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *' # 🔥 核心新增：每隔 30 分钟自动在后台触发一次集群接单巡逻！
+    - cron: '*/20 * * * *'
 
 jobs:
-  run_nodes:
+  render_dynamic_reels:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
     strategy:
-      fail-fast: false
       matrix:
-        # 19 个节点矩阵并发集群
-        node_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-
+        node_id: [1, 2]
     steps:
-      - name: 📥 1. 检出代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: ⚙️ 2. 环境准备 (已包含 rclone 自动安装)
+      - name: 配置 Python 与 FFmpeg 环境
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-noto-cjk ffmpeg rclone fuse3
-          pip install -q pillow edge-tts google-genai torch diffusers transformers accelerate
+          sudo apt-get install -y ffmpeg
+          pip install --upgrade google-genai pillow requests
 
-      - name: 📂 3. 挂载 5TB Google Drive 云盘
-        env:
-          RCLONE_ENCODED_CONFIG: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
-        run: |
-          mkdir -p ~/.config/rclone
-          # Base64 安全解码还原 rclone.conf
-          echo "$RCLONE_ENCODED_CONFIG" | base64 --decode > ~/.config/rclone/rclone.conf
-          
-          sudo mkdir -p /content/drive/MyDrive
-          sudo chmod 777 /content/drive/MyDrive
-          # 启动后台静默挂载
-          rclone mount gdrive: /content/drive/MyDrive --daemon --vfs-cache-mode writes --allow-non-empty
-          sleep 5
-
-      - name: 🚀 4. 节点点火启动！
+      - name: 启动抢单渲染进程
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          WORKER_NODE_ID: "Node_${{ matrix.node_id }}"
+          DIRECTOR_API_URL: ${{ secrets.DIRECTOR_API_URL }}
         run: |
-          # 错峰防冲突启动，避免所有节点同时去抢第1章的锁
-          sleep $(( ${{ matrix.node_id }} * 3 ))
-          python3 worker.py
+          python3 - << 'RUNNER'
+          import os, sys, json, time, requests
+          from google import genai
+          from google.genai import types
+
+          API_URL = os.environ.get("DIRECTOR_API_URL", "").rstrip("/")
+          KEY = os.environ.get("GEMINI_API_KEY", "")
+          if not API_URL or not KEY:
+              sys.exit(0)
+
+          client = genai.Client(api_key=KEY)
+          try:
+              res = requests.get(f"{API_URL}/api/get_task", timeout=15)
+              task = res.json()
+              if task.get("status") == "assigned":
+                  shot = task["shot"]
+                  sid = shot["shot_id"]
+                  print(f"🎬 GitHub 节点接单: {sid}")
+                  prompt = f"{task.get('art_style_anchor')}. {shot.get('prompt')}. Fluid physical motion, 4k cinematic."
+                  op = client.models.generate_videos(
+                      model='veo-2.0-generate-001',
+                      prompt=prompt,
+                      config=types.GenerateVideosConfig(aspect_ratio="16:9", person_generation="allow_adult")
+                  )
+                  while not op.done:
+                      time.sleep(12)
+                      op = client.operations.get(op)
+                  if op.result and op.result.generated_videos:
+                      requests.post(f"{API_URL}/api/report_shot", json={"shot_id": sid}, timeout=10)
+                      print(f"🎉 镜头 {sid} 生成并上报完毕！")
+          except Exception as e:
+              print(f"Swarm Error: {e}")
+          RUNNER
